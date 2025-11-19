@@ -13,14 +13,15 @@ from google.oauth2.service_account import Credentials
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SHEET_NAME = os.getenv("SHEET_NAME", "КУРС")
-EMAIL_COLUMN_NAME = os.getenv("EMAIL_COLUMN_NAME", "Email")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")              # ID таблицы Google Sheets
+SHEET_NAME = os.getenv("SHEET_NAME", "КУРС")              # Имя листа (вкладки), по умолчанию "КУРС"
+EMAIL_COLUMN_NAME = os.getenv("EMAIL_COLUMN_NAME", "Email")  # Имя колонки с email
 
-LESSONS_URL = os.getenv("LESSONS_URL")
+LESSONS_URL = os.getenv("LESSONS_URL")                    # Ссылка на страницу с уроками (Tilda)
 
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")  # JSON сервисного аккаунта
 
+# Проверяем, что заданы основные переменные
 if not all([BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON]):
     print("❌ Не заданы необходимые переменные окружения!")
     print("Нужны: BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -36,7 +37,7 @@ waiting_email: dict[int, bool] = {}
 def get_gs_client():
     """
     Подключаемся к Google Sheets, используя JSON из переменной окружения.
-    Только чтение.
+    Режим только чтения.
     """
     info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -73,21 +74,46 @@ def check_email_paid(email: str) -> bool:
 @dp.message(Command("debug"))
 async def cmd_debug(message: Message):
     """
-    Показывает, какие заголовки и какие email бот видит в таблице.
-    Чтобы понять, правильно ли указаны SHEET_NAME и EMAIL_COLUMN_NAME.
+    Показывает, видит ли бот таблицу и лист,
+    какие заголовки колонок и какие email.
+    Помогает понять, где ошибка: ID, имя листа или доступ.
     """
     try:
-        sh = gs_client.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet(SHEET_NAME)
+        await message.answer("Пробую открыть таблицу и лист…")
 
+        # 1. Пробуем открыть таблицу по ID
+        try:
+            sh = gs_client.open_by_key(SPREADSHEET_ID)
+        except Exception as e:
+            await message.answer(
+                "❌ Не смог открыть таблицу по SPREADSHEET_ID.\n\n"
+                f"SPREADSHEET_ID: `{SPREADSHEET_ID}`\n\n"
+                f"Текст ошибки Google:\n`{e}`",
+                parse_mode="Markdown"
+            )
+            return
+
+        # 2. Пробуем открыть лист по имени
+        try:
+            ws = sh.worksheet(SHEET_NAME)
+        except Exception as e:
+            await message.answer(
+                "❌ Таблица открылась, но не нашёл лист с таким именем.\n\n"
+                f"SHEET_NAME: `{SHEET_NAME}`\n\n"
+                f"Текст ошибки Google:\n`{e}`",
+                parse_mode="Markdown"
+            )
+            return
+
+        # 3. Если сюда дошли – читаем заголовки и первые email
         headers = ws.row_values(1)
         records = ws.get_all_records()
         emails = [str(r.get(EMAIL_COLUMN_NAME, "")) for r in records[:10]]
 
-        text = "🔍 DEBUG\n"
+        text = "✅ Успешно прочитал таблицу.\n\n"
         text += f"Лист: *{SHEET_NAME}*\n"
         text += "Заголовки колонок:\n"
-        text += ", ".join(headers) or "(пусто)"
+        text += (", ".join(headers) or "(пусто)")
         text += "\n\nПримеры значений в колонке *{0}*:\n".format(EMAIL_COLUMN_NAME)
         if emails:
             text += "\n".join(f"- {e}" for e in emails)
@@ -95,12 +121,16 @@ async def cmd_debug(message: Message):
             text += "(нет строк с данными)"
 
         await message.answer(text, parse_mode="Markdown")
+
     except Exception as e:
-        print("Ошибка в /debug:", e)
-        await message.answer("Ошибка при чтении таблицы в /debug. Проверь SPREADSHEET_ID и SHEET_NAME.")
+        await message.answer(
+            "❌ Неизвестная ошибка в /debug.\n"
+            f"`{e}`",
+            parse_mode="Markdown"
+        )
 
 
-# ================== Хэндлеры бота ====================
+# ================== ОСНОВНЫЕ ХЭНДЛЕРЫ ====================
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
