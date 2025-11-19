@@ -4,7 +4,7 @@ import json
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -68,6 +68,38 @@ def check_email_paid(email: str) -> bool:
     return False
 
 
+# ================== DEBUG КОМАНДА ====================
+
+@dp.message(Command("debug"))
+async def cmd_debug(message: Message):
+    """
+    Показывает, какие заголовки и какие email бот видит в таблице.
+    Чтобы понять, правильно ли указаны SHEET_NAME и EMAIL_COLUMN_NAME.
+    """
+    try:
+        sh = gs_client.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet(SHEET_NAME)
+
+        headers = ws.row_values(1)
+        records = ws.get_all_records()
+        emails = [str(r.get(EMAIL_COLUMN_NAME, "")) for r in records[:10]]
+
+        text = "🔍 DEBUG\n"
+        text += f"Лист: *{SHEET_NAME}*\n"
+        text += "Заголовки колонок:\n"
+        text += ", ".join(headers) or "(пусто)"
+        text += "\n\nПримеры значений в колонке *{0}*:\n".format(EMAIL_COLUMN_NAME)
+        if emails:
+            text += "\n".join(f"- {e}" for e in emails)
+        else:
+            text += "(нет строк с данными)"
+
+        await message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        print("Ошибка в /debug:", e)
+        await message.answer("Ошибка при чтении таблицы в /debug. Проверь SPREADSHEET_ID и SHEET_NAME.")
+
+
 # ================== Хэндлеры бота ====================
 
 @dp.message(CommandStart())
@@ -122,8 +154,6 @@ async def handle_text(message: Message):
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="Открыть уроки 📚", url=LESSONS_URL)],
-                    # Можно добавить кнопку поддержки, если захочешь:
-                    # [InlineKeyboardButton(text="Написать в поддержку", url="https://t.me/ТВОЙ_ЮЗЕР")]
                 ]
             )
 
