@@ -138,7 +138,12 @@ async def debug(message: Message):
         await message.answer(txt, parse_mode="Markdown")
 
     except Exception as e:
-        await message.answer(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
+        await message.answer(
+            "❌ Ошибка при доступе к таблице.\n"
+            f"`{e}`\n\n"
+            "Если что-то не так — напиши мне в личку @ilinartem",
+            parse_mode="Markdown"
+        )
 
 
 # ========= START ============
@@ -159,7 +164,8 @@ async def start(message: Message):
             "⚓ Привет! Я бот доступа к курсу для моряков.\n\n"
             "Чтобы получить доступ:\n"
             "1️⃣ Оплати курс на сайте\n"
-            "2️⃣ Вернись сюда по кнопке на странице «Спасибо за оплату».",
+            "2️⃣ Вернись сюда по кнопке на странице «Спасибо за оплату».\n\n"
+            "Если что-то не получится — сразу пиши мне в личку @ilinartem."
         )
 
 
@@ -174,7 +180,8 @@ async def mycode(message: Message):
     if not row_index:
         await message.answer(
             "❗️ Я не нашёл твой Telegram ID в базе.\n"
-            "Если оплата была — отправь свой email снова."
+            "Попробуй ещё раз пройти проверку через ссылку на бота со страницы «Спасибо за оплату».\n\n"
+            "Если что-то не так — напиши мне в личку @ilinartem."
         )
         return
 
@@ -182,13 +189,22 @@ async def mycode(message: Message):
 
     if not access_code:
         access_code = generate_access_code()
-        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
+        try:
+            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
+        except Exception as e:
+            print("Ошибка при обновлении кода в /mycode:", e)
+            await message.answer(
+                "⚠️ Не удалось обновить код в базе.\n"
+                "Если что-то не так — напиши мне в личку @ilinartem.",
+                parse_mode="Markdown"
+            )
 
     await message.answer(
         "🔁 *Повторная выдача данных*\n\n"
         f"🔑 Твой код доступа:\n`{access_code}`\n\n"
         f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n\n"
-        "Нажми и удерживай код, чтобы скопировать.",
+        "Нажми и удерживай код, чтобы скопировать.\n\n"
+        "Если что-то не так — напиши мне в личку @ilinartem.",
         parse_mode="Markdown"
     )
 
@@ -202,7 +218,8 @@ async def handle_email(message: Message):
     if not waiting_email.get(user_id):
         await message.answer(
             "ℹ️ Если ты уже оплатил курс — вернись на сайт и нажми кнопку "
-            "со страницы «Спасибо за оплату»."
+            "со страницы «Спасибо за оплату».\n\n"
+            "Если что-то не так — напиши мне в личку @ilinartem."
         )
         return
 
@@ -213,12 +230,23 @@ async def handle_email(message: Message):
         parse_mode="Markdown"
     )
 
-    row_index, row, headers = find_row_by_email(email)
+    try:
+        row_index, row, headers = find_row_by_email(email)
+    except Exception as e:
+        print("Ошибка при чтении таблицы:", e)
+        await message.answer(
+            "❌ Произошла ошибка при проверке оплаты.\n\n"
+            "Попробуй ещё раз чуть позже.\n"
+            "Если что-то не так — напиши мне в личку @ilinartem.",
+            parse_mode="Markdown"
+        )
+        return
 
     if not row_index:
         await message.answer(
-            "❌ Я не нашёл этот email в списке оплат.\n"
-            "Если оплата была — напиши Артёму: @ilinartem"
+            "❌ Я не нашёл этот email в списке оплат.\n\n"
+            "Проверь, без ошибок ли ты ввёл адрес.\n"
+            "Если ты уверен, что оплата была — напиши мне в личку @ilinartem."
         )
         return
 
@@ -226,10 +254,26 @@ async def handle_email(message: Message):
     access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
     if not access_code:
         access_code = generate_access_code()
-        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
+        try:
+            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
+        except Exception as e:
+            print("Ошибка при сохранении кода:", e)
+            await message.answer(
+                "⚠️ Не удалось сохранить код в базу, но я всё равно покажу его тебе.\n"
+                "Если что-то не так — напиши мне в личку @ilinartem.",
+                parse_mode="Markdown"
+            )
 
     # Сохраняем Telegram ID
-    update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
+    try:
+        update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
+    except Exception as e:
+        print("Ошибка при сохранении TelegramID:", e)
+        await message.answer(
+            "⚠️ Не удалось записать твой Telegram ID в базу.\n"
+            "Если что-то не так — напиши мне в личку @ilinartem.",
+            parse_mode="Markdown"
+        )
 
     waiting_email[user_id] = False
 
@@ -237,17 +281,18 @@ async def handle_email(message: Message):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📚 Открыть уроки", url=LESSONS_URL)],
-            [InlineKeyboardButton(text="✉️ Написать Артёму", url="https://t.me/ilinartem")]
+            [InlineKeyboardButton(text="⚠️ Сообщить о проблеме", url="https://t.me/ilinartem")]
         ]
     )
 
     # Основное сообщение
     await message.answer(
         "✅ *Доступ подтверждён!*\n\n"
-        "Вот твои данные для входа:\n\n"
+        "Вот твои данные для входа на страницу курса:\n\n"
         f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n\n"
         f"🔑 Индивидуальный код доступа:\n`{access_code}`\n\n"
-        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.",
+        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n\n"
+        "Если что-то не так — смело пиши мне в личку @ilinartem.",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
@@ -255,7 +300,8 @@ async def handle_email(message: Message):
     # Сообщение для копирования
     await message.answer(
         f"🔑 *Скопируй код доступа:*\n`{access_code}`\n\n"
-        "Нажми и удерживай, чтобы скопировать.",
+        "Нажми и удерживай, чтобы скопировать.\n\n"
+        "Если что-то не так — напиши мне в личку @ilinartem.",
         parse_mode="Markdown"
     )
 
