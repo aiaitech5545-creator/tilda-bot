@@ -26,12 +26,19 @@ ACCESS_CODE_COLUMN_NAME = os.getenv("ACCESS_CODE_COLUMN_NAME", "AccessCode")
 TELEGRAM_ID_COLUMN_NAME = os.getenv("TELEGRAM_ID_COLUMN_NAME", "TelegramID")
 
 LESSONS_URL = os.getenv("LESSONS_URL")
-PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "2025")  # пароль к странице Tilda по умолчанию
+PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "2025")  # пароль к Tilda по умолчанию
 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # твой Telegram ID (строкой)
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # твой Telegram ID строкой
 
+
+# ========= ССЫЛКИ НА КАНАЛЫ КУРСА ============
+COURSE_CHAT_URL = "https://t.me/+8u12vcEoLJc0YWFi"
+ARTEM_CHANNEL_URL = "https://t.me/mnogomorya"
+
+
+# ========= ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ ============
 
 if not all([BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON]):
     print("❌ Не заданы необходимые переменные окружения!")
@@ -42,7 +49,6 @@ if not all([BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON]
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# от кого ждём email после /start?start=course_access
 waiting_email: dict[int, bool] = {}
 
 
@@ -63,7 +69,7 @@ def get_worksheet():
     return sh.worksheet(SHEET_NAME)
 
 
-def find_row_by_email(email: str) -> Tuple[int | None, Dict | None, List[str] | None]:
+def find_row_by_email(email: str):
     ws = get_worksheet()
     headers = ws.row_values(1)
     records = ws.get_all_records()
@@ -75,7 +81,7 @@ def find_row_by_email(email: str) -> Tuple[int | None, Dict | None, List[str] | 
     return None, None, None
 
 
-def find_row_by_telegram_id(tg_id: int) -> Tuple[int | None, Dict | None, List[str] | None]:
+def find_row_by_telegram_id(tg_id: int):
     ws = get_worksheet()
     headers = ws.row_values(1)
     records = ws.get_all_records()
@@ -101,7 +107,6 @@ def generate_access_code(length: int = 8) -> str:
 
 
 async def notify_admin(email: str, tg_id: int, access_code: str):
-    """Шлём тебе в личку уведомление о новом доступе."""
     if not ADMIN_TELEGRAM_ID:
         return
 
@@ -115,13 +120,10 @@ async def notify_admin(email: str, tg_id: int, access_code: str):
         f"⏱ Время: {ts}"
     )
 
-    try:
-        await bot.send_message(int(ADMIN_TELEGRAM_ID), msg, parse_mode="Markdown")
-    except Exception as e:
-        print("Не удалось отправить уведомление админу:", e)
+    await bot.send_message(int(ADMIN_TELEGRAM_ID), msg, parse_mode="Markdown")
 
 
-# ========= DEBUG /debug ============
+# ========= DEBUG =========
 
 @dp.message(Command("debug"))
 async def debug(message: Message):
@@ -139,18 +141,17 @@ async def debug(message: Message):
         await message.answer(
             "❌ Ошибка при доступе к таблице.\n"
             f"`{e}`\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem.",
+            "Если что-то не так — напиши @ilinartem.",
             parse_mode="Markdown"
         )
 
 
-# ========= /start ============
+# ========= START =========
 
 @dp.message(CommandStart())
 async def start(message: Message):
     args = message.text.split()
 
-    # пользователь пришёл по ссылке с параметром ?start=course_access
     if len(args) > 1 and args[1] == "course_access":
         waiting_email[message.from_user.id] = True
         await message.answer(
@@ -160,35 +161,24 @@ async def start(message: Message):
         )
     else:
         await message.answer(
-            "⚓ Привет! Я бот доступа к курсу для моряков.\n\n"
-            "Чтобы получить доступ к урокам:\n"
+            "⚓ Привет! Чтобы получить доступ к урокам:\n"
             "1️⃣ Оплати курс на сайте\n"
             "2️⃣ Вернись в бота по кнопке со страницы «Спасибо за оплату».\n\n"
             "Если что-то не так — напиши мне в личку @ilinartem."
         )
 
 
-# ========= /mycode — повторная выдача кода и пароля ============
+# ========= /mycode =========
 
 @dp.message(Command("mycode"))
 async def mycode(message: Message):
     tg_id = message.from_user.id
-
-    try:
-        row_index, row, headers = find_row_by_telegram_id(tg_id)
-    except Exception as e:
-        print("Ошибка при поиске по TelegramID в /mycode:", e)
-        await message.answer(
-            "❌ Произошла ошибка при поиске твоих данных.\n"
-            "Попробуй позже. Если что-то не так — напиши мне в личку @ilinartem.",
-            parse_mode="Markdown"
-        )
-        return
+    row_index, row, headers = find_row_by_telegram_id(tg_id)
 
     if not row_index:
         await message.answer(
             "❗️ Я не нашёл твой Telegram ID в базе.\n"
-            "Если оплата была — пройди проверку ещё раз через кнопку на странице «Спасибо за оплату».\n\n"
+            "Если оплата была — пройди проверку ещё раз.\n\n"
             "Если что-то не так — напиши мне в личку @ilinartem."
         )
         return
@@ -196,37 +186,28 @@ async def mycode(message: Message):
     access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
     if not access_code:
         access_code = generate_access_code()
-        try:
-            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
-        except Exception as e:
-            print("Ошибка при обновлении кода в /mycode:", e)
-            await message.answer(
-                "⚠️ Не удалось обновить код в базе.\n"
-                "Если что-то не так — напиши мне в личку @ilinartem.",
-                parse_mode="Markdown"
-            )
+        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
 
     await message.answer(
         "🔁 *Повторная выдача данных*\n\n"
         f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n\n"
         f"🔑 Твой код доступа:\n`{access_code}`\n\n"
-        "Если что-то не так — напиши мне в личку @ilinartem.",
+        "Если что-то не так — напиши @ilinartem.",
         parse_mode="Markdown"
     )
 
 
-# ========= ОБРАБОТКА ЛЮБОГО ТЕКСТА (email) ============
+# ========= EMAIL HANDLER =========
 
 @dp.message(F.text)
 async def handle_email(message: Message):
     user_id = message.from_user.id
 
-    # если мы не ждём от этого пользователя email — отправляем подсказку
     if not waiting_email.get(user_id):
         await message.answer(
-            "ℹ️ Чтобы получить доступ к курсу — вернись на сайт и нажми кнопку "
+            "ℹ️ Чтобы получить доступ — вернись на сайт и нажми кнопку "
             "со страницы «Спасибо за оплату».\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem."
+            "Если что-то не так — напиши @ilinartem."
         )
         return
 
@@ -237,81 +218,58 @@ async def handle_email(message: Message):
         parse_mode="Markdown"
     )
 
-    try:
-        row_index, row, headers = find_row_by_email(email)
-    except Exception as e:
-        print("Ошибка при чтении таблицы:", e)
-        await message.answer(
-            "❌ Произошла ошибка при проверке оплаты.\n\n"
-            "Попробуй ещё раз чуть позже.\n"
-            "Если что-то не так — напиши мне в личку @ilinartem.",
-            parse_mode="Markdown"
-        )
-        return
+    row_index, row, headers = find_row_by_email(email)
 
     if not row_index:
         await message.answer(
-            "❌ Я не нашёл этот email в списке оплат.\n\n"
-            "Проверь, правильно ли ты ввёл адрес.\n"
-            "Если ты уверен, что оплата была — напиши мне в личку @ilinartem."
+            "❌ Этот email не найден в списке оплат.\n"
+            "Проверь правильность.\n"
+            "Если всё верно — напиши @ilinartem."
         )
         return
 
-    # Генерируем или берём существующий код доступа
+    # Код доступа
     access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
     if not access_code:
         access_code = generate_access_code()
-        try:
-            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
-        except Exception as e:
-            print("Ошибка при сохранении кода:", e)
-            await message.answer(
-                "⚠️ Не удалось сохранить код в базу, но я всё равно покажу его тебе.\n"
-                "Если что-то не так — напиши мне в личку @ilinartem.",
-                parse_mode="Markdown"
-            )
+        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
 
-    # Сохраняем Telegram ID
-    try:
-        update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
-    except Exception as e:
-        print("Ошибка при сохранении TelegramID:", e)
-        await message.answer(
-            "⚠️ Не удалось записать твой Telegram ID в базу.\n"
-            "Если что-то не так — напиши мне в личку @ilinartem.",
-            parse_mode="Markdown"
-        )
+    # Telegram ID
+    update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
 
     waiting_email[user_id] = False
 
-    # Клавиатура: уроки + сообщить о проблеме
+    # ========= КНОПКИ =========
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📚 Открыть уроки", url=LESSONS_URL)],
+            [InlineKeyboardButton(text="💬 Вступить в чат курса", url=COURSE_CHAT_URL)],
+            [InlineKeyboardButton(text="📣 Подписаться на мой канал", url=ARTEM_CHANNEL_URL)],
             [InlineKeyboardButton(text="⚠️ Сообщить о проблеме", url="https://t.me/ilinartem")]
         ]
     )
 
-    # Одно основное сообщение (без отдельного "скопируй код")
+    # ========= ОТВЕТ =========
+
     await message.answer(
         "✅ *Доступ подтверждён!*\n\n"
         "Вот твои данные для входа на страницу курса:\n\n"
         f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n"
-        f"🔑 Твой индивидуальный код доступа:\n`{access_code}`\n\n"
-        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n\n"
+        f"🔑 Твой индивидуальный код:\n`{access_code}`\n\n"
+        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n"
+        "📣 Также вступи в чат курса и подпишись на новости.\n\n"
         "Если что-то не так — напиши мне в личку @ilinartem.",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
 
-    # Уведомление админу о новом доступе
     await notify_admin(email, user_id, access_code)
 
 
-# ========= RUN ============
+# ========= RUN =========
 
 async def main():
-    print("🚀 Бот запущен")
+    print("🚀 Бот запущен (курс моряков)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
