@@ -26,7 +26,7 @@ ACCESS_CODE_COLUMN_NAME = os.getenv("ACCESS_CODE_COLUMN_NAME", "AccessCode")
 TELEGRAM_ID_COLUMN_NAME = os.getenv("TELEGRAM_ID_COLUMN_NAME", "TelegramID")
 
 LESSONS_URL = os.getenv("LESSONS_URL")
-PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "море2025")
+PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "2025")   # <<< ИЗМЕНЁННЫЙ ПАРОЛЬ
 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
@@ -67,7 +67,6 @@ def find_row_by_email(email: str):
     records = ws.get_all_records()
 
     email = email.strip().lower()
-
     for i, row in enumerate(records, start=2):
         if str(row.get(EMAIL_COLUMN_NAME, "")).strip().lower() == email:
             return i, row, headers
@@ -81,7 +80,6 @@ def find_row_by_telegram_id(tg_id: int):
     records = ws.get_all_records()
 
     tg_id = str(tg_id)
-
     for i, row in enumerate(records, start=2):
         if str(row.get(TELEGRAM_ID_COLUMN_NAME, "")).strip() == tg_id:
             return i, row, headers
@@ -126,22 +124,14 @@ async def debug(message: Message):
     try:
         ws = get_worksheet()
         headers = ws.row_values(1)
-        records = ws.get_all_records()
 
-        txt = (
-            "🛠 *DEBUG режим*\n\n"
-            f"📄 Лист: `{SHEET_NAME}`\n"
-            "🔎 Заголовки колонок:\n"
-            + ", ".join(headers)
+        await message.answer(
+            f"🛠 DEBUG\n\nЗаголовки колонок:\n{', '.join(headers)}"
         )
-
-        await message.answer(txt, parse_mode="Markdown")
 
     except Exception as e:
         await message.answer(
-            "❌ Ошибка при доступе к таблице.\n"
-            f"`{e}`\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem",
+            f"❌ Ошибка: `{e}`\nЕсли что-то не так — напиши @ilinartem",
             parse_mode="Markdown"
         )
 
@@ -161,15 +151,14 @@ async def start(message: Message):
         )
     else:
         await message.answer(
-            "⚓ Привет! Я бот доступа к курсу для моряков.\n\n"
-            "Чтобы получить доступ:\n"
+            "⚓ Привет! Чтобы получить доступ к урокам:\n\n"
             "1️⃣ Оплати курс на сайте\n"
-            "2️⃣ Вернись сюда по кнопке на странице «Спасибо за оплату».\n\n"
-            "Если что-то не получится — сразу пиши мне в личку @ilinartem."
+            "2️⃣ Вернись в бота по кнопке «Спасибо за оплату».\n\n"
+            "Если что-то не так — напиши @ilinartem."
         )
 
 
-# ========= /mycode — повторная выдача =========
+# ========= /mycode =========
 
 @dp.message(Command("mycode"))
 async def mycode(message: Message):
@@ -180,31 +169,22 @@ async def mycode(message: Message):
     if not row_index:
         await message.answer(
             "❗️ Я не нашёл твой Telegram ID в базе.\n"
-            "Попробуй ещё раз пройти проверку через ссылку на бота со страницы «Спасибо за оплату».\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem."
+            "Если оплата была — заново введи email.\n\n"
+            "Если что-то не так — напиши @ilinartem."
         )
         return
 
     access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
-
     if not access_code:
         access_code = generate_access_code()
-        try:
-            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
-        except Exception as e:
-            print("Ошибка при обновлении кода в /mycode:", e)
-            await message.answer(
-                "⚠️ Не удалось обновить код в базе.\n"
-                "Если что-то не так — напиши мне в личку @ilinartem.",
-                parse_mode="Markdown"
-            )
+        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
 
     await message.answer(
-        "🔁 *Повторная выдача данных*\n\n"
-        f"🔑 Твой код доступа:\n`{access_code}`\n\n"
+        "🔁 *Повторная выдача*\n\n"
         f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n\n"
-        "Нажми и удерживай код, чтобы скопировать.\n\n"
-        "Если что-то не так — напиши мне в личку @ilinartem.",
+        f"🔑 Твой код доступа:\n`{access_code}`\n\n"
+        "Нажми и удерживай, чтобы скопировать.\n"
+        "Если что-то не так — напиши @ilinartem.",
         parse_mode="Markdown"
     )
 
@@ -217,9 +197,9 @@ async def handle_email(message: Message):
 
     if not waiting_email.get(user_id):
         await message.answer(
-            "ℹ️ Если ты уже оплатил курс — вернись на сайт и нажми кнопку "
+            "ℹ️ Чтобы получить доступ — вернись на сайт и нажми кнопку "
             "со страницы «Спасибо за оплату».\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem."
+            "Если что-то не так — напиши @ilinartem."
         )
         return
 
@@ -230,54 +210,27 @@ async def handle_email(message: Message):
         parse_mode="Markdown"
     )
 
-    try:
-        row_index, row, headers = find_row_by_email(email)
-    except Exception as e:
-        print("Ошибка при чтении таблицы:", e)
-        await message.answer(
-            "❌ Произошла ошибка при проверке оплаты.\n\n"
-            "Попробуй ещё раз чуть позже.\n"
-            "Если что-то не так — напиши мне в личку @ilinartem.",
-            parse_mode="Markdown"
-        )
-        return
+    row_index, row, headers = find_row_by_email(email)
 
     if not row_index:
         await message.answer(
-            "❌ Я не нашёл этот email в списке оплат.\n\n"
-            "Проверь, без ошибок ли ты ввёл адрес.\n"
-            "Если ты уверен, что оплата была — напиши мне в личку @ilinartem."
+            "❌ Этот email не найден в списке оплат.\n"
+            "Проверь правильность.\n"
+            "Если всё верно — напиши @ilinartem."
         )
         return
 
-    # Генерация / получение кода
+    # Код доступа
     access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
     if not access_code:
         access_code = generate_access_code()
-        try:
-            update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
-        except Exception as e:
-            print("Ошибка при сохранении кода:", e)
-            await message.answer(
-                "⚠️ Не удалось сохранить код в базу, но я всё равно покажу его тебе.\n"
-                "Если что-то не так — напиши мне в личку @ilinartem.",
-                parse_mode="Markdown"
-            )
+        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
 
-    # Сохраняем Telegram ID
-    try:
-        update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
-    except Exception as e:
-        print("Ошибка при сохранении TelegramID:", e)
-        await message.answer(
-            "⚠️ Не удалось записать твой Telegram ID в базу.\n"
-            "Если что-то не так — напиши мне в личку @ilinartem.",
-            parse_mode="Markdown"
-        )
+    # Telegram ID
+    update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
 
     waiting_email[user_id] = False
 
-    # Кнопки
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📚 Открыть уроки", url=LESSONS_URL)],
@@ -285,34 +238,28 @@ async def handle_email(message: Message):
         ]
     )
 
-    # Основное сообщение
     await message.answer(
         "✅ *Доступ подтверждён!*\n\n"
-        "Вот твои данные для входа на страницу курса:\n\n"
-        f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n\n"
-        f"🔑 Индивидуальный код доступа:\n`{access_code}`\n\n"
-        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n\n"
-        "Если что-то не так — смело пиши мне в личку @ilinartem.",
+        f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n"
+        f"🔑 Твой индивидуальный код:\n`{access_code}`\n\n"
+        "Нажми кнопку ниже, чтобы перейти к урокам.\n\n"
+        "Если что-то не так — напиши @ilinartem.",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
 
-    # Сообщение для копирования
     await message.answer(
-        f"🔑 *Скопируй код доступа:*\n`{access_code}`\n\n"
-        "Нажми и удерживай, чтобы скопировать.\n\n"
-        "Если что-то не так — напиши мне в личку @ilinartem.",
+        f"🔑 *Скопируй код доступа:*\n`{access_code}`",
         parse_mode="Markdown"
     )
 
-    # Уведомление админу
     await notify_admin(email, user_id, access_code)
 
 
 # ========= RUN ============
 
 async def main():
-    print("Бот запущен 🚢 access online")
+    print("🚀 Бот запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
