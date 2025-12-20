@@ -1,55 +1,63 @@
 import asyncio
 import os
 import json
+import re
 import secrets
 import string
-from typing import Tuple, List, Dict
+from typing import Optional, List
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 from aiogram.filters import CommandStart, Command
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 
-# ========= ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ============
+# ========= ENV ============
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SHEET_NAME = os.getenv("SHEET_NAME", "КУРС")
-EMAIL_COLUMN_NAME = os.getenv("EMAIL_COLUMN_NAME", "Email")
 
+EMAIL_COLUMN_NAME = os.getenv("EMAIL_COLUMN_NAME", "Email")
 ACCESS_CODE_COLUMN_NAME = os.getenv("ACCESS_CODE_COLUMN_NAME", "AccessCode")
 TELEGRAM_ID_COLUMN_NAME = os.getenv("TELEGRAM_ID_COLUMN_NAME", "TelegramID")
 
 LESSONS_URL = os.getenv("LESSONS_URL")
-PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "2025")  # пароль к Tilda по умолчанию
+PAGE_PASSWORD = os.getenv("PAGE_PASSWORD", "2025")
 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # строкой
 
-ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # твой Telegram ID строкой
 
-
-# ========= ССЫЛКИ НА КАНАЛЫ КУРСА ============
+# ========= LINKS ============
 COURSE_CHAT_URL = "https://t.me/+8u12vcEoLJc0YWFi"
 ARTEM_CHANNEL_URL = "https://t.me/mnogomorya"
+PROBLEM_URL = "https://t.me/ilinartem"
 
 
-# ========= ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ ============
+# ========= REQUIRED CHECK ============
 
-if not all([BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON]):
+required = [BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON]
+if not all(required):
     print("❌ Не заданы необходимые переменные окружения!")
     print("Нужны: BOT_TOKEN, SPREADSHEET_ID, LESSONS_URL, GOOGLE_SERVICE_ACCOUNT_JSON")
-    exit(1)
+    raise SystemExit(1)
 
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 waiting_email: dict[int, bool] = {}
+gs_lock = asyncio.Lock()
 
 
 # ========= GOOGLE SHEETS ============
@@ -64,41 +72,77 @@ def get_gs_client() -> gspread.Client:
 gs_client = get_gs_client()
 
 
-def get_worksheet():
+def get_worksheet() -> gspread.Worksheet:
     sh = gs_client.open_by_key(SPREADSHEET_ID)
     return sh.worksheet(SHEET_NAME)
 
 
-def find_row_by_email(email: str):
-    ws = get_worksheet()
-    headers = ws.row_values(1)
-    records = ws.get_all_records()
-
-    email = email.strip().lower()
-    for i, row in enumerate(records, start=2):
-        if str(row.get(EMAIL_COLUMN_NAME, "")).strip().lower() == email:
-            return i, row, headers
-    return None, None, None
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
-def find_row_by_telegram_id(tg_id: int):
-    ws = get_worksheet()
-    headers = ws.row_values(1)
-    records = ws.get_all_records()
-
-    tg_id = str(tg_id)
-    for i, row in enumerate(records, start=2):
-        if str(row.get(TELEGRAM_ID_COLUMN_NAME, "")).strip() == tg_id:
-            return i, row, headers
-    return None, None, None
+def _looks_like_email(text: str) -> bool:
+    return bool(re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", text.strip()))
 
 
-def update_cell(row: int, column_name: str, value: str, headers: List[str]):
+def _ts_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _get_headers(ws: gspread.Worksheet) -> List[str]:
+    return ws.row_values(1)
+
+
+def _col_index(headers: List[str], column_name: str) -> Optional[int]:
     if column_name not in headers:
+        return None
+    return headers.index(column_name) + 1
+
+
+def _update_cell(ws: gspread.Worksheet, headers: List[str], row: int, column_name: str, value: str) -> None:
+    col = _col_index(headers, column_name)
+    if not col:
         return
-    col_index = headers.index(column_name) + 1
-    ws = get_worksheet()
-    ws.update_cell(row, col_index, value)
+    ws.update_cell(row, col, value)
+
+
+def _get_row_dict(ws: gspread.Worksheet, headers: List[str], row: int) -> dict:
+    values = ws.row_values(row)
+    if len(values) < len(headers):
+        values += [""] * (len(headers) - len(values))
+    return dict(zip(headers, values))
+
+
+def _find_row_by_email(ws: gspread.Worksheet, headers: List[str], email: str) -> Optional[int]:
+    col = _col_index(headers, EMAIL_COLUMN_NAME)
+    if not col:
+        return None
+
+    # find может находить подстроку, поэтому проверяем точное совпадение значения ячейки
+    cell = ws.find(email, in_column=col)
+    if not cell:
+        return None
+
+    found = ws.cell(cell.row, col).value or ""
+    if _normalize_email(found) == _normalize_email(email):
+        return cell.row
+    return None
+
+
+def _find_row_by_telegram_id(ws: gspread.Worksheet, headers: List[str], tg_id: int) -> Optional[int]:
+    col = _col_index(headers, TELEGRAM_ID_COLUMN_NAME)
+    if not col:
+        return None
+
+    tg_str = str(tg_id)
+    cell = ws.find(tg_str, in_column=col)
+    if not cell:
+        return None
+
+    found = (ws.cell(cell.row, col).value or "").strip()
+    if found == tg_str:
+        return cell.row
+    return None
 
 
 def generate_access_code(length: int = 8) -> str:
@@ -106,30 +150,107 @@ def generate_access_code(length: int = 8) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-async def notify_admin(email: str, tg_id: int, access_code: str):
-    if not ADMIN_TELEGRAM_ID:
-        return
-
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    msg = (
-        "📩 *Новый доступ к курсу!*\n\n"
-        f"📧 Email: `{email}`\n"
-        f"🆔 Telegram ID: `{tg_id}`\n"
-        f"🔑 Код доступа: `{access_code}`\n"
-        f"⏱ Время: {ts}"
+def make_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📚 Открыть уроки", url=LESSONS_URL)],
+            [InlineKeyboardButton(text="💬 Вступить в чат курса", url=COURSE_CHAT_URL)],
+            [InlineKeyboardButton(text="📣 Подписаться на мой канал", url=ARTEM_CHANNEL_URL)],
+            [InlineKeyboardButton(text="⚠️ Сообщить о проблеме", url=PROBLEM_URL)],
+        ]
     )
 
-    await bot.send_message(int(ADMIN_TELEGRAM_ID), msg, parse_mode="Markdown")
+
+async def notify_admin(text: str) -> None:
+    if not ADMIN_TELEGRAM_ID:
+        return
+    try:
+        await bot.send_message(int(ADMIN_TELEGRAM_ID), text, parse_mode="Markdown")
+    except Exception:
+        pass
 
 
-# ========= DEBUG =========
+async def issue_access(message: Message, email: str) -> None:
+    """
+    1) ищем email в таблице
+    2) если найден — выдаём/создаём код, записываем TG ID
+    3) отвечаем пользователю + уведомляем админа
+    """
+    await message.answer(
+        f"🔍 Проверяю оплату по адресу:\n`{email}`…",
+        parse_mode="Markdown"
+    )
+
+    user_id = message.from_user.id
+
+    try:
+        async with gs_lock:
+            ws = get_worksheet()
+            headers = _get_headers(ws)
+
+            row_index = _find_row_by_email(ws, headers, email)
+            if not row_index:
+                await message.answer(
+                    "❌ Этот email не найден в списке оплат.\n"
+                    "Проверь правильность.\n"
+                    "Если всё верно — напиши @ilinartem."
+                )
+                return
+
+            row = _get_row_dict(ws, headers, row_index)
+
+            access_code = (row.get(ACCESS_CODE_COLUMN_NAME, "") or "").strip()
+            if not access_code:
+                access_code = generate_access_code()
+                _update_cell(ws, headers, row_index, ACCESS_CODE_COLUMN_NAME, access_code)
+
+            _update_cell(ws, headers, row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id))
+
+        waiting_email[user_id] = False
+
+    except Exception as e:
+        await message.answer(
+            "❌ Ошибка при проверке оплаты.\n"
+            "Если что-то не так — напиши @ilinartem."
+        )
+        await notify_admin(
+            "⚠️ *Ошибка проверки email*\n\n"
+            f"📧 `{email}`\n"
+            f"🆔 TG: `{user_id}`\n"
+            f"⏱ `{_ts_utc()}`\n"
+            f"❗️ `{e}`"
+        )
+        return
+
+    await message.answer(
+        "✅ *Доступ подтверждён!*\n\n"
+        "Вот твои данные для входа на страницу курса:\n\n"
+        f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n"
+        f"🔑 Твой индивидуальный код:\n`{access_code}`\n\n"
+        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n"
+        "📣 Также вступи в чат курса и подпишись на новости.\n\n"
+        "Если что-то не так — напиши мне в личку @ilinartem.",
+        parse_mode="Markdown",
+        reply_markup=make_keyboard()
+    )
+
+    await notify_admin(
+        "📩 *Новый доступ к курсу!*\n\n"
+        f"📧 Email: `{email}`\n"
+        f"🆔 Telegram ID: `{user_id}`\n"
+        f"🔑 Код доступа: `{access_code}`\n"
+        f"⏱ Время: `{_ts_utc()}`"
+    )
+
+
+# ========= COMMANDS ============
 
 @dp.message(Command("debug"))
 async def debug(message: Message):
     try:
-        ws = get_worksheet()
-        headers = ws.row_values(1)
+        async with gs_lock:
+            ws = get_worksheet()
+            headers = _get_headers(ws)
         await message.answer(
             "🛠 *DEBUG*\n\n"
             f"📄 Лист: `{SHEET_NAME}`\n"
@@ -146,47 +267,53 @@ async def debug(message: Message):
         )
 
 
-# ========= START =========
+@dp.message(Command("access"))
+async def access_cmd(message: Message):
+    waiting_email[message.from_user.id] = True
+    await message.answer(
+        "🔑 Ок, давай выдадим доступ.\n\n"
+        "✉️ Напиши *email*, который ты указывал при оплате.",
+        parse_mode="Markdown"
+    )
 
-@dp.message(CommandStart())
-async def start(message: Message):
-    args = message.text.split()
-
-    if len(args) > 1 and args[1] == "course_access":
-        waiting_email[message.from_user.id] = True
-        await message.answer(
-            "👋 Привет! Я — бот доступа к курсу для моряков.\n\n"
-            "✉️ Напиши *email*, который ты указывал при оплате.",
-            parse_mode="Markdown"
-        )
-    else:
-        await message.answer(
-            "⚓ Привет! Чтобы получить доступ к урокам:\n"
-            "1️⃣ Оплати курс на сайте\n"
-            "2️⃣ Вернись в бота по кнопке со страницы «Спасибо за оплату».\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem."
-        )
-
-
-# ========= /mycode =========
 
 @dp.message(Command("mycode"))
 async def mycode(message: Message):
     tg_id = message.from_user.id
-    row_index, row, headers = find_row_by_telegram_id(tg_id)
 
-    if not row_index:
+    try:
+        async with gs_lock:
+            ws = get_worksheet()
+            headers = _get_headers(ws)
+
+            row_index = _find_row_by_telegram_id(ws, headers, tg_id)
+            if not row_index:
+                await message.answer(
+                    "❗️ Я не нашёл твой Telegram ID в базе.\n"
+                    "Если оплата была — пройди проверку ещё раз.\n\n"
+                    "Если что-то не так — напиши мне в личку @ilinartem."
+                )
+                return
+
+            row = _get_row_dict(ws, headers, row_index)
+            access_code = (row.get(ACCESS_CODE_COLUMN_NAME, "") or "").strip()
+
+            if not access_code:
+                access_code = generate_access_code()
+                _update_cell(ws, headers, row_index, ACCESS_CODE_COLUMN_NAME, access_code)
+
+    except Exception as e:
         await message.answer(
-            "❗️ Я не нашёл твой Telegram ID в базе.\n"
-            "Если оплата была — пройди проверку ещё раз.\n\n"
-            "Если что-то не так — напиши мне в личку @ilinartem."
+            "❌ Ошибка при получении кода.\n"
+            "Если что-то не так — напиши @ilinartem."
+        )
+        await notify_admin(
+            "⚠️ *Ошибка /mycode*\n\n"
+            f"🆔 TG: `{tg_id}`\n"
+            f"⏱ `{_ts_utc()}`\n"
+            f"❗️ `{e}`"
         )
         return
-
-    access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
-    if not access_code:
-        access_code = generate_access_code()
-        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
 
     await message.answer(
         "🔁 *Повторная выдача данных*\n\n"
@@ -197,76 +324,82 @@ async def mycode(message: Message):
     )
 
 
-# ========= EMAIL HANDLER =========
+# ========= START + BUTTON ============
+
+@dp.message(CommandStart())
+async def start(message: Message):
+    args = message.text.split(maxsplit=1)
+
+    # ✅ вариант со ссылкой после оплаты: /start course_access
+    if len(args) > 1 and args[1].strip() == "course_access":
+        waiting_email[message.from_user.id] = True
+        await message.answer(
+            "👋 Привет! Я — бот доступа к курсу для моряков.\n\n"
+            "✉️ Напиши *email*, который ты указывал при оплате.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ✅ вариант без ссылки: обычный /start
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔑 Получить доступ", callback_data="get_access")],
+            [InlineKeyboardButton(text="⚠️ Сообщить о проблеме", url=PROBLEM_URL)],
+        ]
+    )
+    await message.answer(
+        "⚓ Привет! Я — бот доступа к курсу для моряков.\n\n"
+        "Нажми **«Получить доступ»** или введи команду /access.\n"
+        "Также можно просто отправить сюда свой email.",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+
+@dp.callback_query(F.data == "get_access")
+async def cb_get_access(callback: CallbackQuery):
+    waiting_email[callback.from_user.id] = True
+    await callback.message.answer(
+        "✉️ Напиши *email*, который ты указывал при оплате.",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+# ========= TEXT HANDLER (EMAIL) ============
 
 @dp.message(F.text)
-async def handle_email(message: Message):
+async def handle_text(message: Message):
     user_id = message.from_user.id
+    text = message.text.strip()
+
+    # если человек просто прислал email — начинаем проверку даже без режима
+    if _looks_like_email(text):
+        waiting_email[user_id] = True
 
     if not waiting_email.get(user_id):
         await message.answer(
-            "ℹ️ Чтобы получить доступ — вернись на сайт и нажми кнопку "
-            "со страницы «Спасибо за оплату».\n\n"
-            "Если что-то не так — напиши @ilinartem."
+            "ℹ️ Чтобы получить доступ — нажми **«Получить доступ»** или введи /access.\n\n"
+            "Если что-то не так — напиши @ilinartem.",
+            parse_mode="Markdown"
         )
         return
 
-    email = message.text.strip()
+    # режим ожидания email включен
+    email = _normalize_email(text)
 
-    await message.answer(
-        f"🔍 Проверяю оплату по адресу:\n`{email}`…",
-        parse_mode="Markdown"
-    )
-
-    row_index, row, headers = find_row_by_email(email)
-
-    if not row_index:
+    if not _looks_like_email(text):
         await message.answer(
-            "❌ Этот email не найден в списке оплат.\n"
-            "Проверь правильность.\n"
-            "Если всё верно — напиши @ilinartem."
+            "❗️ Похоже, это не email.\n"
+            "Напиши, пожалуйста, email в формате `name@example.com`.",
+            parse_mode="Markdown"
         )
         return
 
-    # Код доступа
-    access_code = row.get(ACCESS_CODE_COLUMN_NAME, "")
-    if not access_code:
-        access_code = generate_access_code()
-        update_cell(row_index, ACCESS_CODE_COLUMN_NAME, access_code, headers)
-
-    # Telegram ID
-    update_cell(row_index, TELEGRAM_ID_COLUMN_NAME, str(user_id), headers)
-
-    waiting_email[user_id] = False
-
-    # ========= КНОПКИ =========
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Открыть уроки", url=LESSONS_URL)],
-            [InlineKeyboardButton(text="💬 Вступить в чат курса", url=COURSE_CHAT_URL)],
-            [InlineKeyboardButton(text="📣 Подписаться на мой канал", url=ARTEM_CHANNEL_URL)],
-            [InlineKeyboardButton(text="⚠️ Сообщить о проблеме", url="https://t.me/ilinartem")]
-        ]
-    )
-
-    # ========= ОТВЕТ =========
-
-    await message.answer(
-        "✅ *Доступ подтверждён!*\n\n"
-        "Вот твои данные для входа на страницу курса:\n\n"
-        f"🔐 Пароль к странице:\n`{PAGE_PASSWORD}`\n"
-        f"🔑 Твой индивидуальный код:\n`{access_code}`\n\n"
-        "➡️ Нажми кнопку ниже, чтобы перейти к урокам.\n"
-        "📣 Также вступи в чат курса и подпишись на новости.\n\n"
-        "Если что-то не так — напиши мне в личку @ilinartem.",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-
-    await notify_admin(email, user_id, access_code)
+    await issue_access(message, email)
 
 
-# ========= RUN =========
+# ========= RUN ============
 
 async def main():
     print("🚀 Бот запущен (курс моряков)")
